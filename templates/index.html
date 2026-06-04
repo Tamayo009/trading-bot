@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trading Bot Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css" />
+  </head>
+  <body>
+    <div class="header">
+      <h1>🤖 Trading Bot Pro</h1>
+      <div class="price-block">
+        <div class="price" id="price">$0.00</div>
+        <div class="price-change" id="price-change" style="color: #8b949e">
+          —
+        </div>
+      </div>
+      <div class="controls">
+        <select id="pair-select" onchange="changePair()">
+          <option value="BTC/USDT">BTC/USDT</option>
+          <option value="ETH/USDT">ETH/USDT</option>
+          <option value="BNB/USDT">BNB/USDT</option>
+          <option value="SOL/USDT">SOL/USDT</option>
+          <option value="ADA/USDT">ADA/USDT</option>
+        </select>
+        <select id="tf-select" onchange="changePair()">
+          <option value="15m">15m</option>
+          <option value="1h" selected>1h</option>
+          <option value="4h">4h</option>
+          <option value="1d">1d</option>
+        </select>
+        <div class="status">
+          <div class="dot"></div>
+          En vivo
+        </div>
+      </div>
+    </div>
+
+    <div class="trend-bar" id="trend-bar">
+      <div class="trend-item">
+        <span class="trend-label">Tendencia 24h</span>
+        <span class="trend-value" id="trend-direction">—</span>
+      </div>
+      <div class="trend-item">
+        <span class="trend-label">Cambio 24h</span>
+        <span class="trend-value" id="trend-change">—</span>
+      </div>
+      <div class="trend-item">
+        <span class="trend-label">Máximo 24h</span>
+        <span class="trend-value" id="trend-high">—</span>
+      </div>
+      <div class="trend-item">
+        <span class="trend-label">Mínimo 24h</span>
+        <span class="trend-value" id="trend-low">—</span>
+      </div>
+      <div class="trend-item">
+        <span class="trend-label">Volumen 24h</span>
+        <span class="trend-value" id="trend-volume">—</span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Señal</h3>
+        <div class="value signal-NEUTRAL" id="signal">—</div>
+      </div>
+      <div class="card">
+        <h3>RSI (14)</h3>
+        <div class="value" id="rsi">—</div>
+        <div
+          style="font-size: 11px; color: #8b949e; margin-top: 4px"
+          id="rsi-status"
+        >
+          —
+        </div>
+      </div>
+      <div class="card">
+        <h3>MACD Diff</h3>
+        <div class="value" id="macd">—</div>
+      </div>
+      <div class="card">
+        <h3>Prob. Compra</h3>
+        <div class="value signal-COMPRA" id="buy-prob">—</div>
+        <div class="prob-bar">
+          <div class="prob-fill-buy" id="buy-bar" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="card">
+        
+        <h3>Prob. Venta</h3>
+        <div class="value signal-VENTA" id="sell-prob">—</div>
+        <div class="prob-bar">
+          <div class="prob-fill-sell" id="sell-bar" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Actualización</h3>
+        <div
+          class="value"
+          style="font-size: 14px; color: #8b949e"
+          id="last-update"
+        >
+          —
+        </div>
+      </div>
+    </div>
+
+    <div class="charts">
+      <div class="chart-container">
+        <div id="candlestick-chart" style="height: 420px"></div>
+      </div>
+      <div class="two-col">
+        <div class="chart-container">
+          <div id="rsi-chart" style="height: 200px"></div>
+        </div>
+        <div class="chart-container">
+          <div id="macd-chart" style="height: 200px"></div>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="chart-container">
+          <h3
+            style="
+              color: #8b949e;
+              font-size: 12px;
+              text-transform: uppercase;
+              margin-bottom: 12px;
+            "
+          >
+            📋 Historial de Señales
+          </h3>
+          <table class="signals-table">
+            <thead>
+              <tr>
+                <th>Hora</th>
+                <th>Par</th>
+                <th>Señal</th>
+                <th>Precio</th>
+                <th>RSI</th>
+              </tr>
+            </thead>
+            <tbody id="signals-body">
+              <tr>
+                <td colspan="5" style="color: #8b949e; text-align: center">
+                  Esperando señales...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="chart-container">
+          <div id="prob-chart" style="height: 240px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- IA PREDICTIVA -->
+<div style="padding: 0 16px 16px;">
+    <div class="chart-container">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
+            <h3 style="color:#8b949e; font-size:12px; text-transform:uppercase;">
+                🧠 IA Predictiva — Machine Learning
+            </h3>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <select id="ai-pair">
+                    <option value="BTC/USDT">BTC/USDT</option>
+                    <option value="ETH/USDT">ETH/USDT</option>
+                    <option value="SOL/USDT">SOL/USDT</option>
+                </select>
+                <select id="ai-tf">
+                    <option value="1h" selected>1h</option>
+                    <option value="4h">4h</option>
+                    <option value="1d">1d</option>
+                </select>
+                <button onclick="trainModel()" style="background:#2d2a1a; border-color:#d29922; color:#d29922;">⚡ Entrenar</button>
+                <button onclick="runPrediction()">🔮 Predecir</button>
+            </div>
+        </div>
+
+        <div id="ai-loading" style="color:#8b949e; text-align:center; padding:20px; display:none;">
+            ⏳ Procesando modelo...
+        </div>
+
+        <div id="ai-results" style="display:none;">
+            <div class="grid" style="grid-template-columns: repeat(4,1fr); margin-bottom:16px;">
+                <div class="card">
+                    <h3>Predicción</h3>
+                    <div class="value" id="ai-prediction">—</div>
+                </div>
+                <div class="card">
+                    <h3>Prob. Sube</h3>
+                    <div class="value signal-COMPRA" id="ai-up">—</div>
+                    <div class="prob-bar"><div class="prob-fill-buy" id="ai-up-bar" style="width:0%"></div></div>
+                </div>
+                <div class="card">
+                    <h3>Prob. Baja</h3>
+                    <div class="value signal-VENTA" id="ai-down">—</div>
+                    <div class="prob-bar"><div class="prob-fill-sell" id="ai-down-bar" style="width:0%"></div></div>
+                </div>
+                <div class="card">
+                    <h3>Confianza</h3>
+                    <div class="value" id="ai-confidence">—</div>
+                </div>
+            </div>
+            <div id="ai-accuracy" style="color:#8b949e; font-size:12px; text-align:center;"></div>
+        </div>
+    </div>
+</div>
+
+    <!-- PAPER TRADING -->
+    <div style="padding: 0 16px 16px">
+      <div class="chart-container">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 10px;
+          "
+        >
+          <h3
+            style="color: #8b949e; font-size: 12px; text-transform: uppercase"
+          >
+            🎮 Paper Trading — Simulador
+          </h3>
+          <div
+            style="
+              display: flex;
+              gap: 8px;
+              flex-wrap: wrap;
+              align-items: center;
+            "
+          >
+            <select id="paper-pair">
+              <option value="BTC/USDT">BTC/USDT</option>
+              <option value="ETH/USDT">ETH/USDT</option>
+              <option value="BNB/USDT">BNB/USDT</option>
+              <option value="SOL/USDT">SOL/USDT</option>
+            </select>
+            <input
+              id="paper-amount"
+              type="number"
+              value="100"
+              placeholder="$ Monto"
+              style="
+                width: 100px;
+                background: #21262d;
+                color: #e6edf3;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 13px;
+              "
+            />
+            <button
+              onclick="paperBuy()"
+              style="background: #1a4731; border-color: #3fb950; color: #3fb950"
+            >
+              🟢 Comprar
+            </button>
+            <button
+              onclick="paperSell()"
+              style="background: #4a1a1a; border-color: #f85149; color: #f85149"
+            >
+              🔴 Vender
+            </button>
+            <button onclick="addCapital()" style="background:#1f2d3d; border-color:#58a6ff; color:#58a6ff;">💰 Recargar</button>
+          </div>
+        </div>
+
+        <div
+          class="grid"
+          style="grid-template-columns: repeat(4, 1fr); margin-bottom: 16px"
+        >
+          <div class="card">
+            <h3>Capital Disponible</h3>
+            <div class="value" id="paper-capital" style="font-size: 20px">
+              $10,000.00
+            </div>
+          </div>
+          <div class="card">
+            <h3>Equity Total</h3>
+            <div class="value" id="paper-equity" style="font-size: 20px">
+              $10,000.00
+            </div>
+          </div>
+          <div class="card">
+            <h3>P&L Total</h3>
+            <div
+              class="value"
+              id="paper-pnl"
+              style="font-size: 20px; color: #8b949e"
+            >
+              $0.00
+            </div>
+          </div>
+          <div class="card">
+            <h3>Retorno %</h3>
+            <div
+              class="value"
+              id="paper-pnl-pct"
+              style="font-size: 20px; color: #8b949e"
+            >
+              0%
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 16px">
+          <h4
+            style="
+              color: #8b949e;
+              font-size: 11px;
+              text-transform: uppercase;
+              margin-bottom: 8px;
+            "
+          >
+            Posiciones Abiertas
+          </h4>
+          <table class="signals-table">
+            <thead>
+              <tr>
+                <th>Par</th>
+                <th>Cantidad</th>
+                <th>Precio Entrada</th>
+                <th>Precio Actual</th>
+                <th>P&L</th>
+              </tr>
+            </thead>
+            <tbody id="paper-positions">
+              <tr>
+                <td colspan="5" style="color: #8b949e; text-align: center">
+                  Sin posiciones abiertas
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <h4
+            style="
+              color: #8b949e;
+              font-size: 11px;
+              text-transform: uppercase;
+              margin-bottom: 8px;
+            "
+          >
+            Historial de Operaciones
+          </h4>
+          <table class="signals-table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Tipo</th>
+                <th>Par</th>
+                <th>Precio</th>
+                <th>Cantidad</th>
+                <th>P&L</th>
+              </tr>
+            </thead>
+            <tbody id="paper-trades">
+              <tr>
+                <td colspan="6" style="color: #8b949e; text-align: center">
+                  Sin operaciones
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- MULTI-PAR -->
+    <div style="padding: 0 16px 16px">
+      <div class="chart-container">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+          "
+        >
+          <h3
+            style="color: #8b949e; font-size: 12px; text-transform: uppercase"
+          >
+            🪙 Monitor Multi-Par
+          </h3>
+          <button onclick="loadMultipair()">🔄 Actualizar</button>
+        </div>
+        <div id="multipair-container">
+          <div style="color: #8b949e; text-align: center; padding: 20px">
+            Cargando pares...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BACKTESTING -->
+    <div style="padding: 0 16px 16px">
+      <div class="chart-container">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 10px;
+          "
+        >
+          <h3
+            style="color: #8b949e; font-size: 12px; text-transform: uppercase"
+          >
+            📊 Backtesting de Estrategia
+          </h3>
+          <div
+            style="
+              display: flex;
+              gap: 8px;
+              flex-wrap: wrap;
+              align-items: center;
+            "
+          >
+            <select id="bt-pair">
+              <option value="BTC/USDT">BTC/USDT</option>
+              <option value="ETH/USDT">ETH/USDT</option>
+              <option value="SOL/USDT">SOL/USDT</option>
+            </select>
+            <select id="bt-tf">
+              <option value="1h" selected>1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1d</option>
+            </select>
+            <input
+              id="bt-capital"
+              type="number"
+              value="1000"
+              style="
+                width: 100px;
+                background: #21262d;
+                color: #e6edf3;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 13px;
+              "
+              placeholder="Capital $"
+            />
+            <button onclick="runBacktest()">▶ Ejecutar</button>
+          </div>
+        </div>
+
+        <div id="bt-results" style="display: none">
+          <div
+            class="grid"
+            style="grid-template-columns: repeat(4, 1fr); margin-bottom: 16px"
+          >
+            <div class="card">
+              <h3>Retorno Total</h3>
+              <div class="value" id="bt-return">—</div>
+            </div>
+            <div class="card">
+              <h3>Buy & Hold</h3>
+              <div class="value" id="bt-buyhold">—</div>
+            </div>
+            <div class="card">
+              <h3>Win Rate</h3>
+              <div class="value" id="bt-winrate">—</div>
+            </div>
+            <div class="card">
+              <h3>Total Trades</h3>
+              <div class="value" id="bt-trades">—</div>
+            </div>
+          </div>
+          <div id="bt-equity-chart" style="height: 300px"></div>
+          <div id="bt-trades-list" style="margin-top: 16px"></div>
+        </div>
+
+        <div
+          id="bt-loading"
+          style="
+            color: #8b949e;
+            text-align: center;
+            padding: 20px;
+            display: none;
+          "
+        >
+          ⏳ Ejecutando backtesting...
+        </div>
+      </div>
+    </div>
+
+    <div style="padding: 0 16px 16px">
+      <div class="chart-container">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+          "
+        >
+          <h3
+            style="color: #8b949e; font-size: 12px; text-transform: uppercase"
+          >
+            📰 Últimas Noticias Crypto
+          </h3>
+          <div style="display: flex; gap: 8px">
+            <button id="btn-en" onclick="switchLang('en')" class="active">
+              🇺🇸 English
+            </button>
+            <button id="btn-es" onclick="switchLang('es')">🇨🇴 Español</button>
+          </div>
+        </div>
+        <div id="news-container">
+          <div style="color: #8b949e; text-align: center; padding: 20px">
+            Cargando noticias...
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="/static/js/app.js"></script>
+    <script src="/static/js/paper_trading.js"></script>
+  </body>
+</html>

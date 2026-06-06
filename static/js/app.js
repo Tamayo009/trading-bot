@@ -1,228 +1,425 @@
-// =====================================================================
-// static/js/app.js - Lógica Central de Transmisión Real-Time y Plotly
-// =====================================================================
-
-// Inicializar el cliente de Socket.io (Se conecta automáticamente a http://localhost:5000)
-const socket = io.connect(window.location.origin);
-
+const socket = io();
+let signalHistory = [];
 let currentPair = 'BTC/USDT';
-let currentTimeframe = '1h';
-let currentLang = 'en';
+let lastPrice = null;
+let lastSignal = 'NEUTRAL';
 
-// Al conectar con el servidor
-socket.on('connect', () => {
-    console.log("📡 Conectado al servidor WebSocket de Trading Bot Pro");
-    document.querySelector('.status').innerHTML = '<div class="dot" style="background:#3fb950;"></div> En vivo';
-    // Inicializar datos estáticos/noticias al arrancar
-    loadTrendData();
-    loadNews();
-    loadMultipair();
-});
+// ─── AUDIO ───────────────────────────────────────────────────────────────────
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-socket.on('disconnect', () => {
-    console.log("❌ Desconectado del servidor");
-    document.querySelector('.status').innerHTML = '<div class="dot" style="background:#f85149;"></div> Desconectado';
-});
+function playSound(type) {
+    const osc  = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
 
-// =====================================================================
-// 💥 ESCUCHA DE EVENTOS REAL-TIME (SOCKET.IO)
-// =====================================================================
-socket.on('update', (data) => {
-    // Para no mezclar datos, solo procesamos si corresponde al par seleccionado
-    // Nota: El backend emite por defecto BTC/USDT. Si cambias de par en el select, 
-    // puedes adaptar tu backend para manejar salas (rooms) o filtrar aquí si la API es multipar.
-    
-    // 1. Actualizar Bloque Superior de Precios e Indicadores en el Grid
-    updateDOMWidgets(data);
-
-    // 2. Renderizar Gráficas Avanzadas con Plotly
-    renderCharts(data.candles);
-});
-
-// =====================================================================
-// 📝 ACTUALIZACIÓN DE COMPONENTES DEL DOM
-// =====================================================================
-function updateDOMWidgets(data) {
-    // Precio y Cambio actual
-    document.getElementById('price').innerText = `$${data.current_price.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
-    
-    // Señal de Trading (Cambio de color dinámico según el estado)
-    const signalDiv = document.getElementById('signal');
-    signalDiv.innerText = data.signal;
-    signalDiv.className = `value signal-${data.signal}`; // Mapea clases css si las tienes
-
-    // RSI y Estado
-    document.getElementById('rsi').innerText = data.rsi;
-    const rsiStatus = document.getElementById('rsi-status');
-    if (data.rsi > 70) { rsiStatus.innerText = "⚡ Sobrecompra"; rsiStatus.style.color = "#f85149"; }
-    else if (data.rsi < 30) { rsiStatus.innerText = "🟢 Sobreventa"; rsiStatus.style.color = "#3fb950"; }
-    else { rsiStatus.innerText = "⏳ Zona Neutral"; rsiStatus.style.color = "#8b949e"; }
-
-    // MACD Histograma/Diferencia
-    document.getElementById('macd').innerText = data.macd_diff;
-    document.getElementById('macd').style.color = data.macd_diff >= 0 ? "#3fb950" : "#f85149";
-
-    // Barras de Probabilidades Ponderadas
-    document.getElementById('buy-prob').innerText = `${data.buy_probability}%`;
-    document.getElementById('buy-bar').style.width = `${data.buy_probability}%`;
-    document.getElementById('sell-prob').innerText = `${data.sell_probability}%`;
-    document.getElementById('sell-bar').style.width = `${data.sell_probability}%`;
-
-    // Timestamp de última actualización
-    document.getElementById('last-update').innerText = new Date().toLocaleTimeString();
-
-    // Agregar de forma opcional al historial de señales si hay un cambio de estado claro
-    if (data.signal !== "NEUTRAL") {
-        appendSignalToTable(data);
+    if (type === 'BUY') {
+        osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        osc.start(audioCtx.currentTime);
+        osc.stop(audioCtx.currentTime + 0.5);
+    } else if (type === 'SELL') {
+        osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(220, audioCtx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        osc.start(audioCtx.currentTime);
+        osc.stop(audioCtx.currentTime + 0.5);
+    } else if (type === 'ALERT') {
+        [0, 0.3].forEach(function(delay) {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.connect(g);
+            g.connect(audioCtx.destination);
+            o.frequency.setValueAtTime(660, audioCtx.currentTime + delay);
+            g.gain.setValueAtTime(0.2, audioCtx.currentTime + delay);
+            g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + delay + 0.2);
+            o.start(audioCtx.currentTime + delay);
+            o.stop(audioCtx.currentTime + delay + 0.2);
+        });
     }
 }
 
-function appendSignalToTable(data) {
-    const tbody = document.getElementById('signals-body');
-    // Eliminar el placeholder de "Esperando señales..." si existe
-    if (tbody.rows.length === 1 && tbody.rows[0].cells.length === 1) {
-        tbody.innerHTML = '';
+function checkSignalSound(signal) {
+    if (signal !== lastSignal) {
+        if (signal === 'COMPRA') playSound('BUY');
+        else if (signal === 'VENTA') playSound('SELL');
+        lastSignal = signal;
     }
-
-    // Evitar duplicados seguidos agregando solo si la hora es distinta o la señal cambia
-    const row = `<tr>
-        <td>${new Date().toLocaleTimeString()}</td>
-        <td>${currentPair}</td>
-        <td class="signal-${data.signal}">${data.signal}</td>
-        <td>$${data.current_price}</td>
-        <td>${data.rsi}</td>
-    </tr>`;
-    tbody.insertAdjacentHTML('afterbegin', row);
 }
 
-// =====================================================================
-// 📊 CONSTRUCCIÓN DE GRÁFICAS CON PLOTLY
-// =====================================================================
-function renderCharts(candles) {
-    const times = candles.map(c => c.time);
-    
-    // --- 1. GRÁFICA PRINCIPAL: VELAS JAPONESAS + EMAs ---
-    const traceCandles = {
-        x: times,
-        open: candles.map(c => c.open),
-        high: candles.map(c => c.high),
-        low: candles.map(c => c.low),
-        close: candles.map(c => c.close),
-        type: 'candlestick',
-        name: currentPair,
-        xaxis: 'x',
-        yaxis: 'y'
-    };
-
-    const traceEMA50 = {
-        x: times,
-        y: candles.map(c => c.ema_50),
-        type: 'scatter',
-        mode: 'lines',
-        name: 'EMA 50',
-        line: { color: '#ffaa00', width: 1.5 }
-    };
-
-    const traceEMA200 = {
-        x: times,
-        y: candles.map(c => c.ema_200),
-        type: 'scatter',
-        mode: 'lines',
-        name: 'EMA 200',
-        line: { color: '#ff00ff', width: 1.5 }
-    };
-
-    const layoutCandles = {
-        dragmode: 'zoom',
-        showlegend: true,
-        background_color: '#0d1117',
-        paper_bgcolor: 'transparent',
-        plot_bgcolor: 'transparent',
-        margin: { r: 40, t: 10, b: 30, l: 50 },
-        xaxis: { autorange: true, title: 'Fecha/Hora', gridcolor: '#21262d', tickfont: {color: '#8b949e'} },
-        yaxis: { autorange: true, title: 'Precio (USD)', gridcolor: '#21262d', tickfont: {color: '#8b949e'} },
-        font: { color: '#e6edf3' }
-    };
-
-    Plotly.newPlot('candlestick-chart', [traceCandles, traceEMA50, traceEMA200], layoutCandles, {responsive: true});
-
-    // --- 2. GRÁFICA DEL RSI (Sub-gráfica inferior) ---
-    const traceRSI = {
-        x: times,
-        y: candles.map(c => c.rsi),
-        type: 'scatter',
-        mode: 'lines',
-        name: 'RSI (14)',
-        line: { color: '#58a6ff', width: 1.5 }
-    };
-
-    const layoutRSI = {
-        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-        margin: { r: 40, t: 10, b: 30, l: 50 },
-        xaxis: { gridcolor: '#21262d', tickfont: {color: '#8b949e'} },
-        yaxis: { range: [10, 90], gridcolor: '#21262d', tickfont: {color: '#8b949e'} },
-        shapes: [
-            { type: 'line', x0: times[0], y0: 70, x1: times[times.length-1], y1: 70, line: { color: '#f85149', width: 1, dash: 'dash' } },
-            { type: 'line', x0: times[0], y0: 30, x1: times[times.length-1], y1: 30, line: { color: '#3fb950', width: 1, dash: 'dash' } }
-        ],
-        font: { color: '#e6edf3' }
-    };
-    Plotly.newPlot('rsi-chart', [traceRSI], layoutRSI, {responsive: true});
-
-    // --- 3. GRÁFICA DEL MACD ---
-    const traceMACDDiff = {
-        x: times,
-        y: candles.map(c => c.macd_diff),
-        type: 'bar',
-        name: 'Histograma',
-        marker: { color: candles.map(c => c.macd_diff >= 0 ? '#3fb950' : '#f85149') }
-    };
-
-    const layoutMACD = {
-        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-        margin: { r: 40, t: 10, b: 30, l: 50 },
-        xaxis: { gridcolor: '#21262d', tickfont: {color: '#8b949e'} },
-        yaxis: { gridcolor: '#21262d', tickfont: {color: '#8b949e'} },
-        font: { color: '#e6edf3' }
-    };
-    Plotly.newPlot('macd-chart', [traceMACDDiff], layoutMACD, {responsive: true});
-}
-
-// =====================================================================
-// 🔌 CONTROLES DE LA INTERFAZ (API Rest Fallbacks / Triggers)
-// =====================================================================
+// ─── CAMBIO DE PAR / TIMEFRAME ───────────────────────────────────────────────
 function changePair() {
     currentPair = document.getElementById('pair-select').value;
-    currentTimeframe = document.getElementById('tf-select').value;
-    console.log(`🔄 Cambiando visualización a: ${currentPair} (${currentTimeframe})`);
-    
-    // Cargar datos estáticos iniciales vía Fetch API antes de que el loop de Sockets mande el siguiente tick
-    fetch(`/api/data?pair=${currentPair}&tf=${currentTimeframe}`)
-        .then(res => res.json())
-        .then(data => {
-            updateDOMWidgets(data);
-            renderCharts(data.candles);
-        });
-    loadTrendData();
+    var tf = document.getElementById('tf-select').value;
+    fetchData(currentPair, tf);
 }
 
-function loadTrendData() {
-    fetch(`/api/trend?pair=${currentPair}`)
-        .then(res => res.json())
-        .then(data => {
-            document.getElementById('trend-direction').innerText = data.trend;
-            document.getElementById('trend-direction').style.color = data.trend === 'UP' ? '#3fb950' : '#f85149';
-            document.getElementById('trend-change').innerText = `${data.change_24h}%`;
-            document.getElementById('trend-change').style.color = data.change_24h >= 0 ? '#3fb950' : '#f85149';
-            document.getElementById('trend-high').innerText = `$${data.high_24h.toLocaleString()}`;
-            document.getElementById('trend-low').innerText = `$${data.low_24h.toLocaleString()}`;
-            document.getElementById('trend-volume').innerText = data.volume_24h.toLocaleString();
-        });
+// ─── FETCH DE DATOS ──────────────────────────────────────────────────────────
+function fetchData(pair, tf) {
+    fetch('/api/data?pair=' + encodeURIComponent(pair) + '&tf=' + tf)
+        .then(function(r) { return r.json(); })
+        .then(function(data) { updateDashboard(data); })
+        .catch(function(err) { console.error('Error fetching data:', err); });
 }
 
-// =====================================================================
-// 📰 ENDPOINT DE NOTICIAS RSS
-// =====================================================================
+// ─── ACTUALIZAR DASHBOARD ────────────────────────────────────────────────────
+function updateDashboard(data) {
+    updatePrice(data.current_price);
+    updateSignal(data.signal);
+    updateRSI(data.rsi);
+    updateMACD(data.macd_diff);
+    updateProbabilities(data.buy_probability, data.sell_probability);
+    updateTime();
+    addToHistory(data);
+    renderCharts(data.candles, data.buy_probability, data.sell_probability);
+}
+
+function updatePrice(price) {
+    var el = document.getElementById('price');
+    el.textContent = '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2 });
+
+    el.classList.remove('price-flash');
+    void el.offsetWidth;
+    el.classList.add('price-flash');
+
+    if (lastPrice !== null) {
+        var diff   = price - lastPrice;
+        var pct    = ((diff / lastPrice) * 100).toFixed(2);
+        var change = document.getElementById('price-change');
+        change.textContent = (diff >= 0 ? '▲' : '▼') + ' ' + Math.abs(pct) + '%';
+        change.style.color = diff >= 0 ? '#3fb950' : '#f85149';
+    }
+    lastPrice = price;
+}
+
+function updateSignal(signal) {
+    var el = document.getElementById('signal');
+    el.textContent = signal;
+    el.className   = 'value signal-' + signal;
+    checkSignalSound(signal);
+}
+
+function updateRSI(rsi) {
+    document.getElementById('rsi').textContent = rsi;
+    var status = document.getElementById('rsi-status');
+    if (rsi < 30) {
+        status.textContent = '⚠️ Sobrevendido';
+        status.style.color = '#3fb950';
+    } else if (rsi > 70) {
+        status.textContent = '⚠️ Sobrecomprado';
+        status.style.color = '#f85149';
+    } else {
+        status.textContent = 'Zona neutral';
+        status.style.color = '#8b949e';
+    }
+}
+
+function updateMACD(macd_diff) {
+    document.getElementById('macd').textContent = macd_diff;
+}
+
+function updateProbabilities(buyProb, sellProb) {
+    document.getElementById('buy-prob').textContent  = buyProb + '%';
+    document.getElementById('sell-prob').textContent = sellProb + '%';
+    document.getElementById('buy-bar').style.width   = buyProb + '%';
+    document.getElementById('sell-bar').style.width  = sellProb + '%';
+}
+
+function updateTime() {
+    document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+}
+
+// ─── HISTORIAL DE SEÑALES ────────────────────────────────────────────────────
+function addToHistory(data) {
+    if (data.signal === 'NEUTRAL') return;
+    signalHistory.unshift({
+        time:   new Date().toLocaleTimeString(),
+        pair:   currentPair,
+        signal: data.signal,
+        price:  data.current_price,
+        rsi:    data.rsi
+    });
+    if (signalHistory.length > 10) signalHistory.pop();
+    updateSignalTable();
+}
+
+function updateSignalTable() {
+    var tbody = document.getElementById('signals-body');
+    if (signalHistory.length === 0) return;
+    tbody.innerHTML = signalHistory.map(function(s) {
+        return '<tr>' +
+            '<td style="color:#8b949e">' + s.time + '</td>' +
+            '<td>' + s.pair + '</td>' +
+            '<td><span class="badge badge-' + (s.signal === 'COMPRA' ? 'buy' : 'sell') + '">' + s.signal + '</span></td>' +
+            '<td>$' + s.price.toLocaleString() + '</td>' +
+            '<td>' + s.rsi + '</td>' +
+            '</tr>';
+    }).join('');
+}
+
+// ─── LAYOUT BASE ─────────────────────────────────────────────────────────────
+var layoutBase = {
+    paper_bgcolor: '#161b22',
+    plot_bgcolor:  '#161b22',
+    font:  { color: '#e6edf3', size: 11 },
+    xaxis: { gridcolor: '#21262d', showgrid: true },
+    yaxis: { gridcolor: '#21262d', showgrid: true },
+    margin: { t: 36, r: 16, b: 36, l: 60 },
+    legend: { bgcolor: 'transparent' },
+    showlegend: true
+};
+
+// ─── GRÁFICOS ─────────────────────────────────────────────────────────────────
+function renderCharts(candles, buyProb, sellProb) {
+    var times  = candles.map(function(c) { return c.time; });
+    var closes = candles.map(function(c) { return c.close; });
+    renderCandlestick(candles, times, closes);
+    renderRSI(candles, times);
+    renderMACD(candles, times);
+    renderGauge(buyProb);
+}
+
+function renderCandlestick(candles, times, closes) {
+    var bbMid = closes.map(function(_, i) {
+        if (i < 19) return null;
+        var slice = closes.slice(i - 19, i + 1);
+        return slice.reduce(function(a, b) { return a + b; }) / 20;
+    });
+
+    var bbStd = closes.map(function(_, i) {
+        if (i < 19) return null;
+        var slice = closes.slice(i - 19, i + 1);
+        var mean  = slice.reduce(function(a, b) { return a + b; }) / 20;
+        return Math.sqrt(slice.reduce(function(a, b) { return a + Math.pow(b - mean, 2); }, 0) / 20);
+    });
+
+    var layout = {
+        autosize: true,
+        paper_bgcolor: '#161b22',
+        plot_bgcolor:  '#161b22',
+        font:  { color: '#e6edf3', size: 11 },
+        margin: { t: 36, r: 16, b: 36, l: 60 },
+        legend: { bgcolor: 'transparent' },
+        showlegend: true,
+        title: { text: currentPair + ' — Velas + BB + EMA + Volumen', font: { color: '#8b949e', size: 12 } },
+        xaxis:  { gridcolor: '#21262d', rangeslider: { visible: false } },
+        yaxis:  { gridcolor: '#21262d', domain: [0.3, 1], title: { text: 'Precio', font: { color: '#8b949e', size: 10 } } },
+        yaxis2: { gridcolor: '#21262d', domain: [0, 0.25], showgrid: true, tickformat: '.2s', title: { text: 'Volumen', font: { color: '#8b949e', size: 10 } } },
+        height: 500
+    };
+
+    Plotly.newPlot('candlestick-chart', [
+        {
+            type: 'candlestick', x: times,
+            open:  candles.map(function(c) { return c.open; }),
+            high:  candles.map(function(c) { return c.high; }),
+            low:   candles.map(function(c) { return c.low; }),
+            close: candles.map(function(c) { return c.close; }),
+            increasing: { line: { color: '#3fb950' }, fillcolor: '#3fb950' },
+            decreasing: { line: { color: '#f85149' }, fillcolor: '#f85149' },
+            name: currentPair, yaxis: 'y'
+        },
+        {
+            x: times, y: bbMid,
+            type: 'scatter', line: { color: '#58a6ff', width: 1 },
+            name: 'BB Media', yaxis: 'y'
+        },
+        {
+            x: times, y: bbMid.map(function(m, i) { return m ? m + 2 * bbStd[i] : null; }),
+            type: 'scatter', line: { color: '#8b949e', width: 1, dash: 'dot' },
+            name: 'BB Superior', yaxis: 'y'
+        },
+        {
+            x: times, y: bbMid.map(function(m, i) { return m ? m - 2 * bbStd[i] : null; }),
+            type: 'scatter', line: { color: '#8b949e', width: 1, dash: 'dot' },
+            name: 'BB Inferior', yaxis: 'y',
+            fill: 'tonexty', fillcolor: 'rgba(88,166,255,0.05)'
+        },
+        {
+            x: times,
+            y: candles.map(function(c) { return c.ema_50; }),
+            type: 'scatter', line: { color: '#f0883e', width: 1.5 },
+            name: 'EMA 50', yaxis: 'y'
+        },
+        {
+            x: times,
+            y: candles.map(function(c) { return c.ema_200; }),
+            type: 'scatter', line: { color: '#d29922', width: 1.5 },
+            name: 'EMA 200', yaxis: 'y'
+        },
+        {
+            x: times,
+            y: candles.map(function(c) { return c.volume; }),
+            type: 'bar', name: 'Volumen', yaxis: 'y2',
+            marker: {
+                color: candles.map(function(c, i) {
+                    if (i === 0) return 'rgba(88,166,255,0.4)';
+                    return c.close >= c.open ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)';
+                })
+            }
+        }
+    ], layout, { responsive: true });
+}
+
+function renderRSI(candles, times) {
+    var layout = {
+        autosize: true,
+        paper_bgcolor: '#161b22', plot_bgcolor: '#161b22',
+        font: { color: '#e6edf3', size: 11 },
+        margin: { t: 36, r: 16, b: 36, l: 60 },
+        legend: { bgcolor: 'transparent' }, showlegend: true,
+        title: { text: 'RSI (14) + Stochastic RSI', font: { color: '#8b949e', size: 12 } },
+        xaxis: { gridcolor: '#21262d' },
+        yaxis:  { gridcolor: '#21262d', range: [0, 100], domain: [0.4, 1] },
+        yaxis2: { gridcolor: '#21262d', range: [0, 1],   domain: [0, 0.35],
+                  title: { text: 'Stoch RSI', font: { color: '#8b949e', size: 10 } } },
+        height: 280
+    };
+
+    Plotly.newPlot('rsi-chart', [
+        {
+            x: times, y: candles.map(function(c) { return c.rsi; }),
+            type: 'scatter', line: { color: '#58a6ff', width: 2 },
+            name: 'RSI', fill: 'tozeroy', fillcolor: 'rgba(88,166,255,0.05)',
+            yaxis: 'y'
+        },
+        {
+            x: times, y: Array(times.length).fill(70),
+            type: 'scatter', line: { color: '#f85149', dash: 'dash', width: 1 },
+            name: 'Sobrecompra (70)', yaxis: 'y'
+        },
+        {
+            x: times, y: Array(times.length).fill(30),
+            type: 'scatter', line: { color: '#3fb950', dash: 'dash', width: 1 },
+            name: 'Sobreventa (30)', yaxis: 'y'
+        },
+        {
+            x: times, y: candles.map(function(c) { return c.stoch_k; }),
+            type: 'scatter', line: { color: '#d29922', width: 1.5 },
+            name: 'Stoch K', yaxis: 'y2'
+        },
+        {
+            x: times, y: candles.map(function(c) { return c.stoch_d; }),
+            type: 'scatter', line: { color: '#f0883e', width: 1.5 },
+            name: 'Stoch D', yaxis: 'y2'
+        }
+    ], layout, { responsive: true });
+}
+
+function renderMACD(candles, times) {
+    var layout = {
+        autosize: true,
+        paper_bgcolor: '#161b22', plot_bgcolor: '#161b22',
+        font: { color: '#e6edf3', size: 11 },
+        margin: { t: 36, r: 16, b: 36, l: 60 },
+        legend: { bgcolor: 'transparent' }, showlegend: true,
+        title: { text: 'MACD', font: { color: '#8b949e', size: 12 } },
+        xaxis: { gridcolor: '#21262d' },
+        yaxis: { gridcolor: '#21262d' }
+    };
+
+    Plotly.newPlot('macd-chart', [
+        { x: times, y: candles.map(function(c) { return c.macd; }), type: 'scatter', line: { color: '#58a6ff', width: 2 }, name: 'MACD' },
+        { x: times, y: candles.map(function(c) { return c.macd_signal; }), type: 'scatter', line: { color: '#f0883e', width: 2 }, name: 'Señal' },
+        { x: times, y: candles.map(function(c) { return c.macd_diff; }), type: 'bar', marker: { color: candles.map(function(c) { return c.macd_diff >= 0 ? '#3fb950' : '#f85149'; }) }, name: 'Histograma' }
+    ], layout, { responsive: true });
+}
+
+function renderGauge(buyProb) {
+    var layout = {
+        autosize: true,
+        paper_bgcolor: '#161b22', plot_bgcolor: '#161b22',
+        font: { color: '#e6edf3', size: 11 },
+        margin: { t: 40, r: 20, b: 20, l: 20 }
+    };
+
+    Plotly.newPlot('prob-chart', [{
+        type: 'indicator', mode: 'gauge+number',
+        value: buyProb,
+        title: { text: 'Prob. Compra %', font: { color: '#8b949e', size: 12 } },
+        number: { font: { color: '#3fb950', size: 36 } },
+        gauge: {
+            axis: { range: [0, 100], tickcolor: '#8b949e' },
+            bar:  { color: '#3fb950' },
+            bgcolor: '#21262d',
+            bordercolor: '#30363d',
+            steps: [
+                { range: [0,  30],  color: '#4a1a1a' },
+                { range: [30, 70],  color: '#2d2a1a' },
+                { range: [70, 100], color: '#1a4731' }
+            ],
+            threshold: { line: { color: '#58a6ff', width: 2 }, thickness: 0.75, value: buyProb }
+        }
+    }], layout, { responsive: true });
+}
+
+// ─── TENDENCIA 24H ───────────────────────────────────────────────────────────
+function updateTrend() {
+    var pair = document.getElementById('pair-select').value;
+    fetch('/api/trend?pair=' + encodeURIComponent(pair))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var dirEl    = document.getElementById('trend-direction');
+            var changeEl = document.getElementById('trend-change');
+
+            dirEl.textContent = data.trend === 'UP' ? '▲ ALCISTA' : '▼ BAJISTA';
+            dirEl.className   = 'trend-value ' + (data.trend === 'UP' ? 'trend-up' : 'trend-down');
+
+            changeEl.textContent = (data.change_24h >= 0 ? '+' : '') + data.change_24h + '%';
+            changeEl.className   = 'trend-value ' + (data.change_24h >= 0 ? 'trend-up' : 'trend-down');
+
+            document.getElementById('trend-high').textContent   = '$' + data.high_24h.toLocaleString('en-US', { minimumFractionDigits: 2 });
+            document.getElementById('trend-low').textContent    = '$' + data.low_24h.toLocaleString('en-US', { minimumFractionDigits: 2 });
+            document.getElementById('trend-volume').textContent = data.volume_24h.toLocaleString('en-US') + ' BTC';
+
+            if (Math.abs(data.change_24h) >= 2) {
+                playSound('ALERT');
+            }
+        })
+        .catch(function(err) { console.error('Error trend:', err); });
+}
+
+// ─── PRECIO EN TIEMPO REAL ───────────────────────────────────────────────────
+function updatePriceRealtime() {
+    var pair = document.getElementById('pair-select').value;
+    fetch('/api/price?pair=' + encodeURIComponent(pair))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            updatePrice(data.price);
+            updateTime();
+        })
+        .catch(function(err) { console.error('Error precio:', err); });
+}
+
+// ─── NOTICIAS ────────────────────────────────────────────────────────────────
+function loadNews() {
+    fetch('/api/news')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var container = document.getElementById('news-container');
+            if (!data.news || data.news.length === 0) {
+                container.innerHTML = '<div style="color:#8b949e; text-align:center; padding:20px;">No hay noticias disponibles</div>';
+                return;
+            }
+            container.innerHTML = data.news.map(function(n) {
+                return '<div class="news-item">' +
+                    '<a class="news-title" href="' + n.link + '" target="_blank">' + n.title + '</a>' +
+                    '<div class="news-meta">' +
+                        '<span class="news-source">' + n.source + '</span>' +
+                        '<span>' + n.date + '</span>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+        })
+        .catch(function(err) { console.error('Error noticias:', err); });
+}
+
+// Noticias cada 5 minutos
+var currentLang = 'en';
+
 function switchLang(lang) {
     currentLang = lang;
     document.getElementById('btn-en').className = lang === 'en' ? 'active' : '';
@@ -231,135 +428,255 @@ function switchLang(lang) {
 }
 
 function loadNews() {
-    const container = document.getElementById('news-container');
-    container.innerHTML = '<div style="color:#8b949e; text-align:center;">⏳ Cargando noticias RSS...</div>';
-    
-    fetch(`/api/news?lang=${currentLang}`)
-        .then(res => res.json())
-        .then(data => {
-            container.innerHTML = '';
-            if(!data.news || data.news.length === 0) {
-                container.innerHTML = '<div style="color:#8b949e; text-align:center;">No hay noticias disponibles.</div>';
+    fetch('/api/news?lang=' + currentLang)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var container = document.getElementById('news-container');
+            if (!data.news || data.news.length === 0) {
+                container.innerHTML = '<div style="color:#8b949e; text-align:center; padding:20px;">No hay noticias disponibles</div>';
                 return;
             }
-            data.news.forEach(item => {
-                const html = `<div style="padding: 10px 0; border-bottom: 1px solid #21262d;">
-                    <a href="${item.link}" target="_blank" style="color:#58a6ff; font-size:14px; text-decoration:none; font-weight:600;">${item.title}</a>
-                    <div style="font-size:11px; color:#8b949e; margin-top:4px;">📰 ${item.source} | 📅 ${item.date}</div>
-                </div>`;
-                container.insertAdjacentHTML('beforeend', html);
-            });
-        });
+            container.innerHTML = data.news.map(function(n) {
+                return '<div class="news-item">' +
+                    '<a class="news-title" href="' + n.link + '" target="_blank">' + n.title + '</a>' +
+                    '<div class="news-meta">' +
+                        '<span class="news-source">' + n.source + '</span>' +
+                        '<span>' + n.date + '</span>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+        })
+        .catch(function(err) { console.error('Error noticias:', err); });
 }
 
-// =====================================================================
-// 🪙 MONITOR MULTIPAR
-// =====================================================================
+loadNews();
+setInterval(loadNews, 300000);
+
+// ─── MULTI-PAR ───────────────────────────────────────────────────────────────
 function loadMultipair() {
-    const container = document.getElementById('multipair-container');
     fetch('/api/multipair')
-        .then(res => res.json())
-        .then(data => {
-            container.innerHTML = '';
-            let htmlTable = `<table class="signals-table">
-                <thead>
-                    <tr><th>Par</th><th>Precio</th><th>Cambio 24h</th><th>RSI</th><th>MACD</th><th>Señal</th></tr>
-                </thead>
-                <tbody>`;
-            data.pairs.forEach(p => {
-                htmlTable += `<tr>
-                    <td><strong>${p.pair}</strong></td>
-                    <td>$${p.price.toLocaleString()}</td>
-                    <td style="color:${p.change_24h >= 0 ? '#3fb950' : '#f85149'}">${p.change_24h}%</td>
-                    <td>${p.rsi}</td>
-                    <td>${p.macd_diff}</td>
-                    <td class="signal-${p.signal}">${p.signal}</td>
-                </tr>`;
-            });
-            htmlTable += '</tbody></table>';
-            container.innerHTML = htmlTable;
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var container = document.getElementById('multipair-container');
+            container.innerHTML =
+                '<table class="signals-table">' +
+                '<thead><tr>' +
+                '<th>Par</th><th>Precio</th><th>Cambio 24h</th>' +
+                '<th>RSI</th><th>MACD</th><th>Señal</th><th>Volumen</th>' +
+                '</tr></thead><tbody>' +
+                data.pairs.map(function(p) {
+                    var changeColor = p.change_24h >= 0 ? '#3fb950' : '#f85149';
+                    var signalClass = p.signal === 'COMPRA' ? 'buy' : p.signal === 'VENTA' ? 'sell' : 'neutral';
+                    return '<tr>' +
+                        '<td style="font-weight:bold">' + p.pair + '</td>' +
+                        '<td>$' + p.price.toLocaleString('en-US', {minimumFractionDigits:2}) + '</td>' +
+                        '<td style="color:' + changeColor + '">' + (p.change_24h >= 0 ? '+' : '') + p.change_24h + '%</td>' +
+                        '<td>' + p.rsi + '</td>' +
+                        '<td>' + p.macd_diff + '</td>' +
+                        '<td><span class="badge badge-' + signalClass + '">' + p.signal + '</span></td>' +
+                        '<td>$' + p.volume.toLocaleString() + '</td>' +
+                        '</tr>';
+                }).join('') +
+                '</tbody></table>';
+        })
+        .catch(function(err) { console.error('Error multipair:', err); });
+}
+
+loadMultipair();
+setInterval(loadMultipair, 60000);
+
+// ─── BACKTESTING ─────────────────────────────────────────────────────────────
+function runBacktest() {
+    var pair    = document.getElementById('bt-pair').value;
+    var tf      = document.getElementById('bt-tf').value;
+    var capital = document.getElementById('bt-capital').value;
+
+    document.getElementById('bt-loading').style.display = 'block';
+    document.getElementById('bt-results').style.display = 'none';
+
+    fetch('/api/backtest?pair=' + encodeURIComponent(pair) + '&tf=' + tf + '&capital=' + capital)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('bt-loading').style.display = 'none';
+            document.getElementById('bt-results').style.display = 'block';
+
+            var retEl = document.getElementById('bt-return');
+            retEl.textContent = data.total_return + '%';
+            retEl.style.color = data.total_return >= 0 ? '#3fb950' : '#f85149';
+
+            var bhEl = document.getElementById('bt-buyhold');
+            bhEl.textContent = data.buy_hold + '%';
+            bhEl.style.color = data.buy_hold >= 0 ? '#3fb950' : '#f85149';
+
+            document.getElementById('bt-winrate').textContent = data.win_rate + '%';
+            document.getElementById('bt-trades').textContent  = data.total_trades;
+
+            // Gráfico equity
+            var times  = data.equity_curve.map(function(e) { return e.time; });
+            var equity = data.equity_curve.map(function(e) { return e.equity; });
+            var prices = data.equity_curve.map(function(e) { return e.price; });
+
+            var buyTimes  = data.trades.filter(function(t) { return t.type === 'BUY'; }).map(function(t) { return t.time; });
+            var sellTimes = data.trades.filter(function(t) { return t.type === 'SELL'; }).map(function(t) { return t.time; });
+            var buyPrices  = data.trades.filter(function(t) { return t.type === 'BUY'; }).map(function(t) { return t.price; });
+            var sellPrices = data.trades.filter(function(t) { return t.type === 'SELL'; }).map(function(t) { return t.price; });
+
+            Plotly.newPlot('bt-equity-chart', [
+                {
+                    x: times, y: equity,
+                    type: 'scatter', line: { color: '#58a6ff', width: 2 },
+                    name: 'Equity', fill: 'tozeroy', fillcolor: 'rgba(88,166,255,0.05)'
+                },
+                {
+                    x: buyTimes, y: buyPrices,
+                    mode: 'markers', name: 'Compra',
+                    marker: { color: '#3fb950', size: 10, symbol: 'triangle-up' },
+                    yaxis: 'y2'
+                },
+                {
+                    x: sellTimes, y: sellPrices,
+                    mode: 'markers', name: 'Venta',
+                    marker: { color: '#f85149', size: 10, symbol: 'triangle-down' },
+                    yaxis: 'y2'
+                },
+                {
+                    x: times, y: prices,
+                    type: 'scatter', line: { color: '#8b949e', width: 1 },
+                    name: 'Precio', yaxis: 'y2'
+                }
+            ], {
+                paper_bgcolor: '#161b22', plot_bgcolor: '#161b22',
+                font: { color: '#e6edf3', size: 11 },
+                margin: { t: 36, r: 16, b: 36, l: 60 },
+                legend: { bgcolor: 'transparent' },
+                showlegend: true,
+                title: { text: 'Curva de Equity vs Precio', font: { color: '#8b949e', size: 12 } },
+                xaxis:  { gridcolor: '#21262d' },
+                yaxis:  { gridcolor: '#21262d', title: { text: 'Equity $', font: { color: '#8b949e', size: 10 } } },
+                yaxis2: { gridcolor: '#21262d', overlaying: 'y', side: 'right', title: { text: 'Precio', font: { color: '#8b949e', size: 10 } } }
+            }, { responsive: true });
+
+            // Tabla de trades
+            var sells = data.trades.filter(function(t) { return t.type === 'SELL'; });
+            if (sells.length > 0) {
+                document.getElementById('bt-trades-list').innerHTML =
+                    '<table class="signals-table">' +
+                    '<thead><tr><th>Fecha</th><th>Tipo</th><th>Precio</th><th>RSI</th><th>P&L</th></tr></thead>' +
+                    '<tbody>' +
+                    data.trades.map(function(t) {
+                        var pnl = t.pnl !== undefined ? (t.pnl >= 0 ? '+$' + t.pnl : '-$' + Math.abs(t.pnl)) : '—';
+                        var color = t.pnl !== undefined ? (t.pnl >= 0 ? '#3fb950' : '#f85149') : '#8b949e';
+                        return '<tr>' +
+                            '<td style="color:#8b949e">' + t.time.substring(0,16) + '</td>' +
+                            '<td><span class="badge badge-' + (t.type === 'BUY' ? 'buy' : 'sell') + '">' + t.type + '</span></td>' +
+                            '<td>$' + t.price + '</td>' +
+                            '<td>' + t.rsi + '</td>' +
+                            '<td style="color:' + color + '">' + pnl + '</td>' +
+                            '</tr>';
+                    }).join('') +
+                    '</tbody></table>';
+            }
+        })
+        .catch(function(err) {
+            document.getElementById('bt-loading').style.display = 'none';
+            console.error('Error backtest:', err);
         });
 }
 
-// =====================================================================
-// 🧠 ENDPOINTS DE MACHINE LEARNING
-// =====================================================================
+// ─── IA PREDICTIVA ───────────────────────────────────────────────────────────
 function trainModel() {
-    toggleAILoading(true);
-    const pair = document.getElementById('ai-pair').value;
-    const tf = document.getElementById('ai-tf').value;
-    
-    fetch(`/api/predict?pair=${pair}&tf=${tf}&action=${train}`)
-        .then(res => res.json())
-        .then(data => {
-            toggleAILoading(false);
-            alert(`✅ Modelo entrenado con éxito. Precisión del: ${data.accuracy}%`);
-        }).catch(() => toggleAILoading(false));
+    var pair = document.getElementById('ai-pair').value;
+    var tf   = document.getElementById('ai-tf').value;
+
+    document.getElementById('ai-loading').style.display = 'block';
+    document.getElementById('ai-results').style.display = 'none';
+    document.getElementById('ai-loading').textContent   = '⚡ Entrenando modelo con 1000 velas...';
+
+    fetch('/api/predict?pair=' + encodeURIComponent(pair) + '&tf=' + tf + '&action=train')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('ai-loading').style.display = 'none';
+            alert('✅ Modelo entrenado con ' + data.accuracy + '% de precisión');
+            runPrediction();
+        })
+        .catch(function(err) {
+            document.getElementById('ai-loading').style.display = 'none';
+            console.error('Error training:', err);
+        });
 }
 
 function runPrediction() {
-    toggleAILoading(true);
-    const pair = document.getElementById('ai-pair').value;
-    const tf = document.getElementById('ai-tf').value;
-    
-    fetch(`/api/predict?pair=${pair}&tf=${tf}&action=predict`)
-        .then(res => res.json())
-        .then(data => {
-            toggleAILoading(false);
-            document.getElementById('ai-results').style.display = 'block';
-            document.getElementById('ai-prediction').innerText = data.prediction;
-            document.getElementById('ai-prediction').className = `value signal-${data.prediction === 'SUBE' ? 'COMPRA' : 'VENTA'}`;
-            
-            document.getElementById('ai-up').innerText = `${data.prob_up}%`;
-            document.getElementById('ai-up-bar').style.width = `${data.prob_up}%`;
-            document.getElementById('ai-down').innerText = `${data.prob_down}%`;
-            document.getElementById('ai-down-bar').style.width = `${data.prob_down}%`;
-            document.getElementById('ai-confidence').innerText = `${data.confidence}%`;
-        }).catch(() => toggleAILoading(false));
-}
+    var pair = document.getElementById('ai-pair').value;
+    var tf   = document.getElementById('ai-tf').value;
 
-function toggleAILoading(show) {
-    document.getElementById('ai-loading').style.display = show ? 'block' : 'none';
-    document.getElementById('ai-results').style.display = show ? 'none' : 'block';
-}
+    document.getElementById('ai-loading').style.display  = 'block';
+    document.getElementById('ai-results').style.display  = 'none';
+    document.getElementById('ai-loading').textContent    = '🔮 Calculando predicción...';
 
-// =====================================================================
-// 📊 BACKTESTING TRIGGER
-// =====================================================================
-function runBacktest() {
-    document.getElementById('bt-loading').style.display = 'block';
-    document.getElementById('bt-results').style.display = 'none';
-    
-    const pair = document.getElementById('bt-pair').value;
-    const tf = document.getElementById('bt-tf').value;
-    const capital = document.getElementById('bt-capital').value;
+    fetch('/api/predict?pair=' + encodeURIComponent(pair) + '&tf=' + tf)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('ai-loading').style.display = 'none';
 
-    fetch(`/api/backtest?pair=${pair}&tf=${tf}&capital=${capital}`)
-        .then(res => res.json())
-        .then(data => {
-            document.getElementById('bt-loading').style.display = 'none';
-            document.getElementById('bt-results').style.display = 'block';
-            
-            document.getElementById('bt-return').innerText = `${data.total_return_pct}%`;
-            document.getElementById('bt-return').style.color = data.total_return_pct >= 0 ? '#3fb950' : '#f85149';
-            document.getElementById('bt-buyhold').innerText = `${data.buy_and_hold_return_pct}%`;
-            document.getElementById('bt-winrate').innerText = `${data.win_rate}%`;
-            document.getElementById('bt-trades').innerText = data.total_trades;
-
-            // Graficar curva de Equity si tu backend retorna un historial
-            if (data.equity_curve) {
-                const traceEquity = {
-                    x: data.equity_curve.times,
-                    y: data.equity_curve.values,
-                    type: 'scatter', mode: 'lines', name: 'Balance $',
-                    line: { color: '#58a6ff' }
-                };
-                Plotly.newPlot('bt-equity-chart', [traceEquity], {
-                    paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-                    margin: { r: 20, t: 10, b: 30, l: 50 },
-                    xaxis: { gridcolor: '#21262d' }, yaxis: { gridcolor: '#21262d' },
-                    font: { color: '#e6edf3' }
-                });
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
             }
+
+            document.getElementById('ai-results').style.display = 'block';
+
+            var predEl = document.getElementById('ai-prediction');
+            predEl.textContent = data.prediction === 'SUBE' ? '📈 SUBE' : '📉 BAJA';
+            predEl.style.color = data.prediction === 'SUBE' ? '#3fb950' : '#f85149';
+
+            document.getElementById('ai-up').textContent          = data.up_probability + '%';
+            document.getElementById('ai-down').textContent        = data.down_probability + '%';
+            document.getElementById('ai-up-bar').style.width      = data.up_probability + '%';
+            document.getElementById('ai-down-bar').style.width    = data.down_probability + '%';
+            document.getElementById('ai-confidence').textContent  = data.confidence + '%';
+            document.getElementById('ai-confidence').style.color  = data.confidence > 60 ? '#3fb950' : '#d29922';
+
+            if (data.accuracy) {
+                document.getElementById('ai-accuracy').textContent = '📊 Precisión del modelo: ' + data.accuracy + '%';
+            }
+        })
+        .catch(function(err) {
+            document.getElementById('ai-loading').style.display = 'none';
+            console.error('Error prediction:', err);
         });
 }
+
+// ─── SOCKET & INIT ───────────────────────────────────────────────────────────
+socket.on('update', updateDashboard);
+
+fetchData('BTC/USDT', '1h');
+updateTrend();
+
+setInterval(function() {
+    var tf = document.getElementById('tf-select').value;
+    fetchData(currentPair, tf);
+}, 60000);
+
+setInterval(updatePriceRealtime, 3000);
+setInterval(updateTrend, 30000);
+
+// ─── RESPONSIVE RESIZE ───────────────────────────────────────────────────────
+var resizeTimer;
+window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+        var charts = [
+            'candlestick-chart',
+            'rsi-chart',
+            'macd-chart',
+            'prob-chart',
+            'bt-equity-chart'
+        ];
+        charts.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) {
+                Plotly.Plots.resize(el);
+            }
+        });
+    }, 250);
+});

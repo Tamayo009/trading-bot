@@ -1,4 +1,7 @@
-// ─── PAPER TRADING ───────────────────────────────────────────────────────────
+// =====================================================================
+// static/js/paper_trading.js - Simulador de Operaciones (Paper Trading)
+// =====================================================================
+
 var paperPortfolio = {
     capital:    50000,
     positions:  {},
@@ -20,14 +23,13 @@ function round2(n) { return Math.round(n * 100) / 100; }
 function paperBuy() {
     var pair    = document.getElementById('paper-pair').value;
     var amount  = parseFloat(document.getElementById('paper-amount').value);
-    var capital = paperPortfolio.capital;
 
     if (!amount || amount <= 0) { alert('Ingresa un monto válido'); return; }
 
     fetch('/api/paper/order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'BUY', pair: pair, amount: amount / 100 })
+        body: JSON.stringify({ type: 'BUY', pair: pair, amount: amount })
     })
     .then(function(r) { return r.json(); })
     .then(function(order) {
@@ -113,14 +115,14 @@ function updatePaperUI() {
     document.getElementById('paper-pnl-pct').textContent    = (pnlPct >= 0 ? '+' : '') + pnlPct + '%';
     document.getElementById('paper-pnl-pct').style.color    = pnlColor;
 
-    // Posiciones
+    // Posiciones Abiertas
     var posHtml = Object.keys(paperPortfolio.positions).map(function(pair) {
         var pos    = paperPortfolio.positions[pair];
         var posPnl = round2((pos.currentPrice - pos.avgPrice) * pos.amount);
         var posColor = posPnl >= 0 ? '#3fb950' : '#f85149';
         return '<tr>' +
             '<td style="font-weight:bold">' + pair + '</td>' +
-            '<td>' + round2(pos.amount) + '</td>' +
+            '<td>' + pos.amount.toFixed(6) + '</td>' +
             '<td>$' + round2(pos.avgPrice).toLocaleString() + '</td>' +
             '<td>$' + round2(pos.currentPrice).toLocaleString() + '</td>' +
             '<td style="color:' + posColor + '">' + (posPnl >= 0 ? '+$' : '-$') + Math.abs(posPnl).toLocaleString() + '</td>' +
@@ -130,7 +132,7 @@ function updatePaperUI() {
     document.getElementById('paper-positions').innerHTML = posHtml ||
         '<tr><td colspan="5" style="color:#8b949e; text-align:center">Sin posiciones abiertas</td></tr>';
 
-    // Historial
+    // Historial de Operaciones
     var tradesHtml = paperPortfolio.trades.slice(0, 10).map(function(t) {
         var pnlStr = t.pnl !== undefined ? (t.pnl >= 0 ? '+$' + t.pnl : '-$' + Math.abs(t.pnl)) : '—';
         var pnlColor = t.pnl !== undefined ? (t.pnl >= 0 ? '#3fb950' : '#f85149') : '#8b949e';
@@ -155,4 +157,12 @@ function addCapital() {
     paperPortfolio.initial  += amount;
     updatePaperUI();
     alert('✅ Se agregaron $' + amount.toLocaleString() + ' a tu cuenta');
+}
+
+// Vinculación con los eventos de actualización en tiempo real de Socket.io
+function updatePricesFromSocket(pair, currentPrice) {
+    if (paperPortfolio.positions[pair]) {
+        paperPortfolio.positions[pair].currentPrice = currentPrice;
+        updatePaperUI();
+    }
 }
